@@ -26,4 +26,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clean and intuitive user interface
 - Persistent timer across app restarts
 
-[1.0.0]: https://github.com/yourusername/eye_break_app/releases/tag/v1.0.0
+[1.0.0]: https://github.com/SauravKhanalgit/Eye_Break_App_MacOS/releases/tag/v1.0.0

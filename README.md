@@ -27,8 +27,8 @@ Every **20 minutes**, look at something **20 feet away** for **20 seconds** to h
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/eye_break_app.git
-cd eye_break_app
+git clone https://github.com/SauravKhanalgit/Eye_Break_App_MacOS.git
+cd Eye_Break_App_MacOS
 ```
 
 2. Install dependencies:
@@ -93,9 +93,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📧 Contact
 
-Your Name - [@yourtwitter](https://twitter.com/yourtwitter)
+Saurav Khanal - [@SauravKhanalgit](https://github.com/SauravKhanalgit)
 
-Project Link: [https://github.com/yourusername/eye_break_app](https://github.com/yourusername/eye_break_app)
+Project Link: [https://github.com/SauravKhanalgit/Eye_Break_App_MacOS](https://github.com/SauravKhanalgit/Eye_Break_App_MacOS)
 
 ---
 
