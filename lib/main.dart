@@ -3,6 +3,7 @@ import 'eye_break_screen.dart';
 import 'baba_tiktik_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 

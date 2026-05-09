@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -34,23 +35,45 @@ class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
   }
 
   Future<void> _initNotifications() async {
-    const DarwinInitializationSettings initSettingsMac =
-        DarwinInitializationSettings();
-    const InitializationSettings initSettings =
-        InitializationSettings(macOS: initSettingsMac);
+    const initSettings = InitializationSettings(
+      macOS: DarwinInitializationSettings(),
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    );
     await _notifications.initialize(initSettings);
+
+    if (Platform.isAndroid) {
+      await _notifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+    }
   }
 
   Future<void> _showNotification() async {
     if (!_notificationEnabled) return;
 
-    final NotificationDetails details = NotificationDetails(
-      macOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentSound: _soundEnabled,
-        presentBanner: true,
-      ),
-    );
+    final NotificationDetails details;
+    if (Platform.isAndroid) {
+      details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'baba_tiktik_channel',
+          'Baba Tiktik',
+          channelDescription: 'Periodic reminders from Baba Tiktik',
+          importance: Importance.high,
+          priority: Priority.high,
+          enableVibration: _vibrationEnabled,
+          playSound: _soundEnabled,
+        ),
+      );
+    } else {
+      details = NotificationDetails(
+        macOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentSound: _soundEnabled,
+          presentBanner: true,
+        ),
+      );
+    }
 
     await _notifications.show(
       1,
@@ -229,10 +252,12 @@ class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
                     icon: Icons.vibration,
                     iconColor: Colors.orange,
                     title: 'Vibration',
-                    subtitle: 'Not available on macOS',
+                    subtitle: Platform.isAndroid
+                        ? 'Vibrate with each notification'
+                        : 'Not available on macOS',
                     value: _vibrationEnabled,
                     onChanged: (v) => setState(() => _vibrationEnabled = v),
-                    enabled: false,
+                    enabled: Platform.isAndroid,
                   ),
                   const Divider(height: 1),
                   _ToggleRow(

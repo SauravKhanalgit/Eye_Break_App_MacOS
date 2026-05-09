@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:system_tray/system_tray.dart';
@@ -20,31 +21,70 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
   int _timeUntilBreak = 20 * 60;
   final SystemTray _systemTray = SystemTray();
 
+  static const _androidChannelId = 'eye_break_channel';
+  static const _androidChannelName = 'Eye Break';
+  static const _notificationId = 0;
+
   @override
   void initState() {
     super.initState();
     _initNotifications();
-    _initSystemTray();
+    if (Platform.isMacOS) _initSystemTray();
     _startTimer();
   }
 
   Future<void> _initNotifications() async {
-    const DarwinInitializationSettings initSettingsMac =
-        DarwinInitializationSettings();
-    const InitializationSettings initSettings =
-        InitializationSettings(macOS: initSettingsMac);
+    const initSettings = InitializationSettings(
+      macOS: DarwinInitializationSettings(),
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    );
     await _notifications.initialize(initSettings);
+
+    if (Platform.isAndroid) {
+      await _notifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+    }
+  }
+
+  NotificationDetails get _notificationDetails {
+    if (Platform.isAndroid) {
+      return const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _androidChannelId,
+          _androidChannelName,
+          channelDescription: '20-20-20 eye break reminders',
+          importance: Importance.high,
+          priority: Priority.high,
+          enableVibration: true,
+        ),
+      );
+    }
+    return const NotificationDetails(
+      macOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
+    );
   }
 
   Future<void> _showNotification() async {
-    const NotificationDetails details = NotificationDetails(
-      macOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
-    );
     await _notifications.show(
-      0,
+      _notificationId,
       "👀 Time for an Eye Break!",
-      "Follow the 20-20-20 rule:\n• Look at something 20 feet away\n• For 20 seconds\n• Every 20 minutes",
-      details,
+      "Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.",
+      _notificationDetails,
+    );
+  }
+
+  // Schedules a repeating background notification on Android so reminders
+  // fire even when the app is killed.
+  Future<void> _scheduleAndroidPeriodicNotification() async {
+    await _notifications.cancel(_notificationId);
+    await _notifications.periodicallyShowWithDuration(
+      _notificationId,
+      "👀 Time for an Eye Break!",
+      "Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.",
+      Duration(minutes: _breakIntervalMinutes),
+      _notificationDetails,
     );
   }
 
@@ -53,21 +93,25 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
     _timer?.cancel();
     _displayTimer?.cancel();
     _timeUntilBreak = _breakIntervalMinutes * 60;
-    _updateSystemTrayTitle();
 
+    if (Platform.isMacOS) _updateSystemTrayTitle();
+    if (Platform.isAndroid) _scheduleAndroidPeriodicNotification();
+
+    // On macOS the timer fires the notification; on Android notifications are
+    // handled by the system scheduler above — the timer is visual only.
     _timer = Timer.periodic(const Duration(minutes: 1), (timer) {
       _timeUntilBreak -= 60;
       if (_timeUntilBreak <= 0) {
         _timeUntilBreak = _breakIntervalMinutes * 60;
-        _showNotification();
+        if (Platform.isMacOS) _showNotification();
       }
-      _updateSystemTrayTitle();
+      if (Platform.isMacOS) _updateSystemTrayTitle();
     });
 
     _displayTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!_isPaused && mounted) {
         setState(() => _timeUntilBreak--);
-        _updateSystemTrayTitle();
+        if (Platform.isMacOS) _updateSystemTrayTitle();
       }
     });
   }
@@ -86,6 +130,7 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
       if (_isPaused) {
         _timer?.cancel();
         _displayTimer?.cancel();
+        if (Platform.isAndroid) _notifications.cancel(_notificationId);
       } else {
         _startTimer();
       }
@@ -94,7 +139,7 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
 
   void _resetTimer() {
     setState(() => _timeUntilBreak = _breakIntervalMinutes * 60);
-    _updateSystemTrayTitle();
+    if (Platform.isMacOS) _updateSystemTrayTitle();
     if (!_isPaused) _startTimer();
   }
 
@@ -186,6 +231,14 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
                   color: _isPaused ? Colors.red : Colors.green,
                 ),
               ),
+              if (Platform.isAndroid)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    "Notifications continue in background",
+                    style: TextStyle(fontSize: 13, color: Colors.blueAccent),
+                  ),
+                ),
               const SizedBox(height: 32),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
