@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:system_tray/system_tray.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 class EyeBreakScreen extends StatefulWidget {
   const EyeBreakScreen({super.key});
@@ -14,23 +16,26 @@ class EyeBreakScreen extends StatefulWidget {
 class _EyeBreakScreenState extends State<EyeBreakScreen> {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
-  Timer? _timer;
   Timer? _displayTimer;
   bool _isPaused = false;
   int _breakIntervalMinutes = 20;
   int _timeUntilBreak = 20 * 60;
+  bool _exactAlarmGranted = false;
   final SystemTray _systemTray = SystemTray();
 
-  static const _androidChannelId = 'eye_break_channel';
-  static const _androidChannelName = 'Eye Break';
-  static const _notificationId = 0;
+  static final _batteryChannel = const MethodChannel('eye_break/battery');
+
+  // IDs 100–123 reserved for the 24 pre-scheduled eye-break notifications.
+  static const int _scheduleIdBase = 100;
+  static const int _scheduleCount = 24;
 
   @override
   void initState() {
     super.initState();
     _initNotifications();
     if (Platform.isMacOS) _initSystemTray();
-    _startTimer();
+    _startDisplayTimer();
+    if (Platform.isAndroid) _scheduleAndroidNotifications();
   }
 
   Future<void> _initNotifications() async {
@@ -41,23 +46,45 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
     await _notifications.initialize(initSettings);
 
     if (Platform.isAndroid) {
-      await _notifications
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.requestNotificationsPermission();
+      final plugin = _notifications.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await plugin?.requestNotificationsPermission();
+      final granted = await plugin?.requestExactAlarmsPermission();
+      setState(() => _exactAlarmGranted = granted ?? false);
+      await _requestBatteryOptimizationExemption();
     }
+  }
+
+  Future<bool> _isIgnoringBatteryOptimizations() async {
+    try {
+      return await _batteryChannel
+          .invokeMethod<bool>('isIgnoringBatteryOptimizations') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    try {
+      final alreadyExempt = await _isIgnoringBatteryOptimizations();
+      if (!alreadyExempt) {
+        await _batteryChannel
+            .invokeMethod('requestIgnoreBatteryOptimizations');
+      }
+    } catch (_) {}
   }
 
   NotificationDetails get _notificationDetails {
     if (Platform.isAndroid) {
       return const NotificationDetails(
         android: AndroidNotificationDetails(
-          _androidChannelId,
-          _androidChannelName,
+          'eye_break_channel',
+          'Eye Break',
           channelDescription: '20-20-20 eye break reminders',
-          importance: Importance.high,
-          priority: Priority.high,
+          importance: Importance.max,
+          priority: Priority.max,
           enableVibration: true,
+          fullScreenIntent: false,
         ),
       );
     }
@@ -66,81 +93,91 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
     );
   }
 
-  Future<void> _showNotification() async {
+  // macOS: show an immediate notification (timer-based).
+  Future<void> _showNotificationMacOS() async {
     await _notifications.show(
-      _notificationId,
+      0,
       "👀 Time for an Eye Break!",
       "Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.",
       _notificationDetails,
     );
   }
 
-  // Schedules a repeating background notification on Android so reminders
-  // fire even when the app is killed.
-  Future<void> _scheduleAndroidPeriodicNotification() async {
-    await _notifications.cancel(_notificationId);
-    await _notifications.periodicallyShowWithDuration(
-      _notificationId,
-      "👀 Time for an Eye Break!",
-      "Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.",
-      Duration(minutes: _breakIntervalMinutes),
-      _notificationDetails,
-    );
+  // Android: cancel existing scheduled batch and schedule 24 exact-alarm
+  // notifications at the configured interval. These fire even when the app
+  // is completely killed.
+  Future<void> _scheduleAndroidNotifications() async {
+    await _cancelAndroidScheduled();
+
+    final plugin = _notifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final canExact = await plugin?.canScheduleExactNotifications() ?? false;
+    final scheduleMode = canExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+
+    final now = tz.TZDateTime.now(tz.UTC);
+
+    for (int i = 1; i <= _scheduleCount; i++) {
+      await _notifications.zonedSchedule(
+        _scheduleIdBase + i - 1,
+        "👀 Time for an Eye Break!",
+        "Follow the 20-20-20 rule: Look at something 20 feet away for 20 seconds.",
+        now.add(Duration(minutes: _breakIntervalMinutes * i)),
+        _notificationDetails,
+        androidScheduleMode: scheduleMode,
+      );
+    }
+
+    if (mounted) setState(() => _exactAlarmGranted = canExact);
   }
 
-  void _startTimer() {
-    if (_isPaused) return;
-    _timer?.cancel();
+  Future<void> _cancelAndroidScheduled() async {
+    for (int i = 0; i < _scheduleCount; i++) {
+      await _notifications.cancel(_scheduleIdBase + i);
+    }
+  }
+
+  // Drives the visible countdown in the UI. On macOS it also fires the
+  // notification; on Android notifications are handled by the OS scheduler.
+  void _startDisplayTimer() {
     _displayTimer?.cancel();
     _timeUntilBreak = _breakIntervalMinutes * 60;
-
     if (Platform.isMacOS) _updateSystemTrayTitle();
-    if (Platform.isAndroid) _scheduleAndroidPeriodicNotification();
 
-    // On macOS the timer fires the notification; on Android notifications are
-    // handled by the system scheduler above — the timer is visual only.
-    _timer = Timer.periodic(const Duration(minutes: 1), (timer) {
-      _timeUntilBreak -= 60;
-      if (_timeUntilBreak <= 0) {
-        _timeUntilBreak = _breakIntervalMinutes * 60;
-        if (Platform.isMacOS) _showNotification();
-      }
+    _displayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_isPaused || !mounted) return;
+      setState(() {
+        _timeUntilBreak--;
+        if (_timeUntilBreak <= 0) {
+          _timeUntilBreak = _breakIntervalMinutes * 60;
+          if (Platform.isMacOS) _showNotificationMacOS();
+        }
+      });
       if (Platform.isMacOS) _updateSystemTrayTitle();
-    });
-
-    _displayTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!_isPaused && mounted) {
-        setState(() => _timeUntilBreak--);
-        if (Platform.isMacOS) _updateSystemTrayTitle();
-      }
     });
   }
 
   void _updateSystemTrayTitle() {
-    final minutes = (_timeUntilBreak / 60).floor();
-    final seconds = _timeUntilBreak % 60;
+    final m = (_timeUntilBreak / 60).floor();
+    final s = _timeUntilBreak % 60;
     _systemTray.setTitle(
-      '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
-    );
+        '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}');
   }
 
   void _togglePause() {
-    setState(() {
-      _isPaused = !_isPaused;
-      if (_isPaused) {
-        _timer?.cancel();
-        _displayTimer?.cancel();
-        if (Platform.isAndroid) _notifications.cancel(_notificationId);
-      } else {
-        _startTimer();
-      }
-    });
+    setState(() => _isPaused = !_isPaused);
+    if (_isPaused) {
+      if (Platform.isAndroid) _cancelAndroidScheduled();
+    } else {
+      if (Platform.isAndroid) _scheduleAndroidNotifications();
+    }
   }
 
   void _resetTimer() {
     setState(() => _timeUntilBreak = _breakIntervalMinutes * 60);
     if (Platform.isMacOS) _updateSystemTrayTitle();
-    if (!_isPaused) _startTimer();
+    if (!_isPaused && Platform.isAndroid) _scheduleAndroidNotifications();
   }
 
   Future<void> _initSystemTray() async {
@@ -154,7 +191,7 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
     await menu.buildFrom([
       MenuItemLabel(
         label: "Take Break Now",
-        onClicked: (_) => _showNotification(),
+        onClicked: (_) => _showNotificationMacOS(),
       ),
       MenuItemLabel(
         label: _isPaused ? "Resume Timer" : "Pause Timer",
@@ -231,14 +268,45 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
                   color: _isPaused ? Colors.red : Colors.green,
                 ),
               ),
-              if (Platform.isAndroid)
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
-                  child: Text(
-                    "Notifications continue in background",
-                    style: TextStyle(fontSize: 13, color: Colors.blueAccent),
-                  ),
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      _exactAlarmGranted
+                          ? Icons.alarm_on
+                          : Icons.alarm_off,
+                      size: 16,
+                      color: _exactAlarmGranted
+                          ? Colors.green
+                          : Colors.orange,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _exactAlarmGranted
+                          ? "Exact alarms active — works when app is closed"
+                          : "Grant exact alarm permission for background use",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _exactAlarmGranted
+                            ? Colors.green
+                            : Colors.orange,
+                      ),
+                    ),
+                  ],
                 ),
+                if (!_exactAlarmGranted)
+                  TextButton(
+                    onPressed: () async {
+                      await _notifications
+                          .resolvePlatformSpecificImplementation<
+                              AndroidFlutterLocalNotificationsPlugin>()
+                          ?.requestExactAlarmsPermission();
+                    },
+                    child: const Text("Grant Permission"),
+                  ),
+              ],
               const SizedBox(height: 32),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -281,7 +349,6 @@ class _EyeBreakScreenState extends State<EyeBreakScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
     _displayTimer?.cancel();
     super.dispose();
   }
