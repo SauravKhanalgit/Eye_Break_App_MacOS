@@ -1,8 +1,8 @@
-import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'foreground_task_handler.dart';
 
 class BabaTiktikScreen extends StatefulWidget {
   const BabaTiktikScreen({super.key});
@@ -12,10 +12,6 @@ class BabaTiktikScreen extends StatefulWidget {
 }
 
 class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
-  final FlutterLocalNotificationsPlugin _notifications =
-      FlutterLocalNotificationsPlugin();
-
-  Timer? _timer;
   bool _isRunning = false;
   bool _soundEnabled = true;
   bool _vibrationEnabled = true;
@@ -31,73 +27,85 @@ class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
   @override
   void initState() {
     super.initState();
-    _initNotifications();
+    _checkRunningState();
+    // Listen for stop button pressed in the foreground notification
+    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
   }
 
-  Future<void> _initNotifications() async {
-    const initSettings = InitializationSettings(
-      macOS: DarwinInitializationSettings(),
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-    );
-    await _notifications.initialize(initSettings);
-
-    if (Platform.isAndroid) {
-      await _notifications
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.requestNotificationsPermission();
-    }
+  void _onTaskData(Object data) {
+    // Currently unused — reserved for future task→UI communication
   }
 
-  Future<void> _showNotification() async {
-    if (!_notificationEnabled) return;
+  Future<void> _checkRunningState() async {
+    final running = await FlutterForegroundTask.isRunningService;
+    if (mounted) setState(() => _isRunning = running);
+  }
 
-    final NotificationDetails details;
-    if (Platform.isAndroid) {
-      details = NotificationDetails(
-        android: AndroidNotificationDetails(
-          'baba_tiktik_channel',
-          'Baba Tiktik',
-          channelDescription: 'Periodic reminders from Baba Tiktik',
-          importance: Importance.high,
-          priority: Priority.high,
-          enableVibration: _vibrationEnabled,
-          playSound: _soundEnabled,
-        ),
-      );
-    } else {
-      details = NotificationDetails(
-        macOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentSound: _soundEnabled,
-          presentBanner: true,
-        ),
-      );
-    }
-
-    await _notifications.show(
-      1,
-      '⏰ Tiktik!',
-      _notificationTextController.text,
-      details,
+  void _initService(int seconds) {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'baba_tiktik_foreground',
+        channelName: 'Baba Tiktik Service',
+        channelDescription: 'Keeps Baba Tiktik running in the background',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.repeat(seconds * 1000),
+        autoRunOnBoot: false,
+        allowWakeLock: true,
+      ),
     );
   }
 
-  void _start() {
+  Future<void> _saveTaskData() async {
+    await FlutterForegroundTask.saveData(
+        key: 'message', value: _notificationTextController.text);
+    await FlutterForegroundTask.saveData(
+        key: 'soundEnabled', value: _soundEnabled);
+    await FlutterForegroundTask.saveData(
+        key: 'vibrationEnabled', value: _vibrationEnabled);
+    await FlutterForegroundTask.saveData(
+        key: 'notificationEnabled', value: _notificationEnabled);
+  }
+
+  Future<void> _start() async {
     final seconds = _intervalSeconds;
     if (seconds <= 0) {
       _showError('Please enter a valid number of seconds.');
       return;
     }
-    setState(() => _isRunning = true);
-    _timer = Timer.periodic(Duration(seconds: seconds), (_) {
-      _showNotification();
-    });
+
+    await _saveTaskData();
+    _initService(seconds);
+
+    // Request battery optimization exemption so Android won't kill the service
+    if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    }
+
+    final result = await FlutterForegroundTask.startService(
+      notificationTitle: 'Baba Tiktik Running',
+      notificationText: 'Reminding every ${seconds}s',
+      callback: startCallback,
+      notificationButtons: [
+        const NotificationButton(id: 'stop', text: 'Stop'),
+      ],
+    );
+
+    if (result is ServiceRequestSuccess) {
+      setState(() => _isRunning = true);
+    } else if (result is ServiceRequestFailure) {
+      _showError('Could not start service: ${result.error}');
+    }
   }
 
-  void _stop() {
-    _timer?.cancel();
-    setState(() => _isRunning = false);
+  Future<void> _stop() async {
+    final result = await FlutterForegroundTask.stopService();
+    if (result is ServiceRequestSuccess || result is ServiceRequestFailure) {
+      setState(() => _isRunning = false);
+    }
   }
 
   void _showError(String message) {
@@ -271,22 +279,6 @@ class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-
-            // ── Preview Button ──────────────────────────────────────
-            OutlinedButton.icon(
-              onPressed: _showNotification,
-              icon: const Icon(Icons.preview),
-              label: const Text('Preview Notification'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                textStyle: const TextStyle(fontSize: 16),
-                side: const BorderSide(color: Colors.deepPurple),
-                foregroundColor: Colors.deepPurple,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
           ],
         ),
       ),
@@ -295,7 +287,7 @@ class _BabaTiktikScreenState extends State<BabaTiktikScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
     _secondsController.dispose();
     _notificationTextController.dispose();
     super.dispose();

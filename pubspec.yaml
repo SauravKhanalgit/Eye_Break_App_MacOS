@@ -25,6 +25,7 @@ dependencies:
   system_tray: ^2.0.3
   flutter_local_notifications: ^19.4.1
   timezone: ^0.10.1
+  flutter_foreground_task: ^8.0.0
 
 dev_dependencies:
   flutter_test:

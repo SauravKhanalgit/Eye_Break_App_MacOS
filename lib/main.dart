@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'eye_break_screen.dart';
 import 'baba_tiktik_screen.dart';
@@ -6,6 +7,7 @@ import 'baba_tiktik_screen.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   tz.initializeTimeZones();
+  FlutterForegroundTask.initCommunicationPort();
   runApp(const MyApp());
 }
 
